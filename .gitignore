@@ -7,3 +7,4 @@ coverage
 lib
 
 /src/generated/prisma
+test/fixtures/mock-cert.pem
