@@ -1,0 +1,13 @@
+clauses:
+  - id: 1
+    title: "TypeScript Only"
+    category: "Architecture"
+    description: "All new application code must be written in TypeScript, not pure JavaScript."
+  - id: 2
+    title: "No Hardcoded Secrets"
+    category: "Security"
+    description: "Never hardcode passwords, API keys, or JWT secrets in the repository. Use environment variables."
+  - id: 3
+    title: "Include meaningful logging"
+    category: "Observability"
+    description: "Whenever creating new endpoints, ensure to log important actions or errors."
