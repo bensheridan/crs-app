@@ -1,0 +1,52 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model Clause {
+  id               String      @id @default(uuid())
+  title            String
+  category         String
+  created_at       DateTime    @default(now())
+  violation_count  Int         @default(0)
+  last_violated_at DateTime?
+  auto_enforce      Boolean     @default(false)
+  created_by        String?
+  source_pr         Int?
+  confidence_score  Int         @default(0)
+  enforcement_level String      @default("advisory")
+
+  violations        Violation[]
+}
+
+model Violation {
+  id               String   @id @default(uuid())
+  clause           Clause   @relation(fields: [clause_id], references: [id])
+  clause_id        String
+  pr_number        Int
+  reviewer         String
+  ai_agent_version String?
+  timestamp        DateTime @default(now())
+}
+
+model ReviewerProfile {
+  id                 String @id @default(uuid())
+  github_id          String @unique
+  constitution_score Int    @default(0)
+  regression_score   Int    @default(0)
+  clauses_created    Int    @default(0)
+  total_reviews      Int    @default(0)
+  agreed_with_ai     Int    @default(0)
+  overrode_ai        Int    @default(0)
+}
+
+model Metric {
+  id               String   @id @default(uuid())
+  name             String   @unique
+  value            Int      @default(0)
+  last_updated_at  DateTime @default(now())
+}
