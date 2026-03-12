@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import axios from 'axios';
-import { ShieldCheck, AlertTriangle, FileText, Activity } from 'lucide-react';
+import { ShieldCheck, AlertTriangle, FileText, Activity, Brain } from 'lucide-react';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   LineChart, Line
@@ -13,6 +13,7 @@ interface Clause {
   category: string;
   violation_count: number;
   last_violated_at: string;
+  confidence_score: number;
 }
 
 interface Violation {
@@ -78,6 +79,9 @@ function App() {
 
   const totalViolations = clauses.reduce((acc, c) => acc + c.violation_count, 0);
   const activeClauses = clauses.length;
+  const avgConfidence = activeClauses > 0
+    ? Math.round(clauses.reduce((acc, c) => acc + (c.confidence_score || 0), 0) / activeClauses)
+    : 0;
 
   // Format data for Recharts
   const topClausesData = clauses.slice(0, 5).map(c => ({
@@ -111,6 +115,14 @@ function App() {
             Total Violations Caught
           </div>
           <div className="stat-value">{totalViolations}</div>
+        </div>
+
+        <div className="card">
+          <div className="card-title">
+            <Brain color="var(--accent-hover)" size={24} />
+            Avg AI Confidence
+          </div>
+          <div className="stat-value">{avgConfidence}/100</div>
         </div>
 
         <div className="card" style={{ gridColumn: '1 / -1' }}>

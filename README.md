@@ -12,7 +12,7 @@ To run CRS locally, you will need:
 - **Node.js** (v18+)
 - **PostgreSQL** running locally
 - **Redis** running locally (for tracking recurring violations)
-- An **OpenAI API Key** with `gpt-4o` access
+- An **Anthropic API Key** with `claude-3-7-sonnet-20250219` access
 - A **GitHub Account / Organization** to install the App
 
 ## 🚀 Setup & Installation
@@ -40,8 +40,8 @@ WEBHOOK_PROXY_URL=https://smee.io/WjHPu1bNtqx2XyVi
 DATABASE_URL="postgresql://postgres:postgres@localhost:5432/crs_db?schema=public"
 REDIS_URL="redis://localhost:6379"
 
-# OpenAI
-OPENAI_API_KEY="sk-..."
+# Anthropic
+ANTHROPIC_API_KEY="sk-..."
 ```
 
 ### 3. Register the GitHub App

@@ -1,6 +1,8 @@
-import OpenAI from "openai";
+import Anthropic from "@anthropic-ai/sdk";
 
-const openai = new OpenAI();
+const anthropic = new Anthropic({
+  apiKey: process.env.ANTHROPIC_API_KEY,
+});
 
 export interface AIReviewResult {
   intentSummary: string;
@@ -73,22 +75,30 @@ export async function generatePRReview(
   `;
 
   try {
-    const response = await openai.chat.completions.create({
-      model: "gpt-4o",
+    const response = await anthropic.messages.create({
+      model: "claude-3-7-sonnet-20250219",
+      max_tokens: 4096,
+      system: "You are a specialized AI reviewer that outputs strictly valid JSON. Do not include markdown formatting or reasoning text.",
       messages: [
-        { role: "system", content: "You are a specialized AI reviewer that outputs strictly valid JSON." },
         { role: "user", content: prompt }
-      ],
-      response_format: { type: "json_object" }
+      ]
     });
 
-    const content = response.choices[0].message.content;
-    if (!content) throw new Error("No content from OpenAI");
+    const contentBlock = response.content[0];
+    if (contentBlock.type !== 'text') throw new Error("Unexpected content format from Anthropic");
 
-    return JSON.parse(content) as AIReviewResult;
+    // Sometimes Claude wraps JSON in markdown blocks even when told not to. Basic cleanup:
+    let jsonText = contentBlock.text;
+    if (jsonText.startsWith('```json')) {
+      jsonText = jsonText.replace(/^```json\s*/, '').replace(/\s*```$/, '');
+    } else if (jsonText.startsWith('```')) {
+      jsonText = jsonText.replace(/^```\s*/, '').replace(/\s*```$/, '');
+    }
+
+    return JSON.parse(jsonText.trim()) as AIReviewResult;
   } catch (err: any) {
-    if (err?.status === 429 || err?.code === 'insufficient_quota') {
-      console.warn("⚠️ OpenAI Quota Exceeded. Returning Mock Data for Demonstration Purposes.");
+    if (err?.status === 429 || err?.error?.type === 'rate_limit_error' || err?.message?.includes('credit')) {
+      console.warn("⚠️ Anthropic Quota Exceeded. Returning Mock Data for Demonstration Purposes.");
 
       // Fallback Mock Payload matching the user's PR
       return {
