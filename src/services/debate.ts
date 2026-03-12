@@ -42,7 +42,7 @@ export async function generateDebateReview(
 
     try {
         const response = await anthropic.messages.create({
-            model: "claude-3-7-sonnet-20250219",
+            model: "claude-sonnet-4-5",
             max_tokens: 4096,
             temperature: 0.7, // slightly higher temperature for a more critical/creative perspective
             system: "You are a critical AI reviewer that outputs strictly valid JSON. Do not include markdown formatting or reasoning text.",
