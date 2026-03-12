@@ -11,3 +11,27 @@ clauses:
     title: "Include meaningful logging"
     category: "Observability"
     description: "Whenever creating new endpoints, ensure to log important actions or errors."
+  - id: 4
+    title: "Use Shadcn Components"
+    category: "Architecture"
+    description: "Prefer using existing Shadcn UI components before creating custom ones to maintain visual consistency and accessibility."
+  - id: 5
+    title: "Tailwind Utility First"
+    category: "Styling"
+    description: "Adhere to Tailwind CSS utility classes instead of writing custom CSS/SCSS files unless strictly necessary."
+  - id: 6
+    title: "React Hooks Dependencies"
+    category: "Architecture"
+    description: "Ensure all dependencies in React hooks (useEffect, useCallback, useMemo) are exhaustive and complete."
+  - id: 7
+    title: "Semantic HTML and Accessibility"
+    category: "Accessibility"
+    description: "Ensure all interactive elements have semantic HTML tags and appropriate ARIA attributes for screen readers."
+  - id: 8
+    title: "Prevent Cross-Site Scripting (XSS)"
+    category: "Security"
+    description: "Avoid using dangerouslySetInnerHTML. If it must be used, ensure the HTML string is strictly sanitized on the server before rendering."
+  - id: 9
+    title: "Secure Component Configuration"
+    category: "Security"
+    description: "Do not pass sensitive tokens or credentials as standard React props to client components."
