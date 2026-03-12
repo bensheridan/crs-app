@@ -76,7 +76,7 @@ export async function generatePRReview(
 
   try {
     const response = await anthropic.messages.create({
-      model: "claude-3-7-sonnet-20250219",
+      model: "claude-sonnet-4-5",
       max_tokens: 4096,
       system: "You are a specialized AI reviewer that outputs strictly valid JSON. Do not include markdown formatting or reasoning text.",
       messages: [
