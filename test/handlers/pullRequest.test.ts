@@ -106,7 +106,7 @@ describe("formatReviewComment with MultiRoundDebateResult", () => {
   it("renders rounds completed as X/Y", () => {
     const debate = makeDebateResult();
     const comment = formatReviewComment(minimalAIResult, debate);
-    expect(comment).toContain("Rounds completed: 2/3");
+    expect(comment).toContain("Rounds: 2/3");
   });
 
   it("renders each round with score and strength label", () => {

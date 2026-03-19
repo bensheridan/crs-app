@@ -202,12 +202,7 @@ ${tile.description}`;
     let debateMarkdown = "";
     if (debateResult) {
         const roundsMarkdown = debateResult.rounds.map(round => {
-            return `### Round ${round.roundNumber} — Score: ${round.score}/100 (${round.strengthLabel})
-**Primary Reviewer:**
-${round.primaryArgument}
-
-**Devil's Advocate:**
-${round.devilRebuttal}`;
+            return `<details>\n<summary>Round ${round.roundNumber} — Score: ${round.score}/100 (${round.strengthLabel})</summary>\n\n**Primary Reviewer:**\n${round.primaryArgument}\n\n**Devil's Advocate:**\n${round.devilRebuttal}\n</details>`;
         }).join("\n\n");
 
         const earlyTermination = debateResult.terminatedEarly
@@ -216,8 +211,7 @@ ${round.devilRebuttal}`;
 
         debateMarkdown = `## 🤼 AI Debate Summary
 
-**Debate Confidence: ${debateResult.debateConfidence}/100 (${debateResult.confidenceLabel})**
-Rounds completed: ${debateResult.totalRoundsCompleted}/${debateResult.maxRoundsConfigured}
+**Debate Confidence: ${debateResult.debateConfidence}/100 (${debateResult.confidenceLabel})** · Rounds: ${debateResult.totalRoundsCompleted}/${debateResult.maxRoundsConfigured}${debateResult.terminatedEarly ? " · ✅ Consensus reached" : ""}
 
 ${roundsMarkdown}${earlyTermination}
 
