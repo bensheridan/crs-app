@@ -260,5 +260,9 @@ async function postError(context: Context<"issue_comment.created">, message: str
 }
 
 export function escapeRegExp(string: string) {
+    // Escapes all regex metacharacters so the string can be used as a literal pattern.
+    // Hyphen (-) is intentionally NOT escaped: it is only special inside character
+    // classes ([...]), not in a plain regex pattern, so escaping it would break the
+    // preservation invariant that safe strings pass through unchanged.
     return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); // $& means the whole matched string
 }

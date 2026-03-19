@@ -80,7 +80,12 @@ export async function generateDebateReview(
         return JSON.parse(jsonText.trim()) as AIDebateResult;
     } catch (err: any) {
         if (err?.status === 429 || err?.error?.type === 'rate_limit_error' || err?.message?.includes('credit')) {
-            console.warn("⚠️ Anthropic Quota Exceeded. Returning Mock Debate Data for Demonstration Purposes.");
+            if (process.env.DEBATE_DEMO_MODE !== 'true') {
+                // In production, propagate quota errors so callers can handle them explicitly
+                // rather than silently returning demo data that could mask real issues.
+                throw new Error(`Anthropic quota exceeded during generateDebateReview. Set DEBATE_DEMO_MODE=true to enable mock fallback for demos.`);
+            }
+            console.warn("⚠️ DEBATE_DEMO_MODE: Anthropic Quota Exceeded. Returning Mock Debate Data.");
             return {
                 agreesWithPrimary: false,
                 debateSummary: "While the primary reviewer correctly identified the hardcoded secret, it failed to fully analyze the severity of the architectural violation. Using raw JavaScript (`test.js`) entirely defeats our TypeScript compilation pipelines.",
@@ -160,7 +165,10 @@ export async function generatePrimaryArgument(
         return JSON.parse(cleanJsonResponse(contentBlock.text)) as RoundArgumentResult;
     } catch (err: any) {
         if (err?.status === 429 || err?.error?.type === 'rate_limit_error' || err?.message?.includes('credit')) {
-            console.warn("⚠️ Anthropic Quota Exceeded. Returning Mock Primary Argument for Demonstration Purposes.");
+            if (process.env.DEBATE_DEMO_MODE !== 'true') {
+                throw new Error(`Anthropic quota exceeded during generatePrimaryArgument. Set DEBATE_DEMO_MODE=true to enable mock fallback for demos.`);
+            }
+            console.warn("⚠️ DEBATE_DEMO_MODE: Anthropic Quota Exceeded. Returning Mock Primary Argument.");
             return {
                 argument: "The primary review correctly identified a hardcoded secret in dbSettings.js. The DB_PASSWORD variable on line 5 contains a plaintext credential, which violates the 'No Hardcoded Secrets' clause. Additionally, introducing a .js file violates the 'TypeScript Only' architectural rule.",
                 constitutionalReferences: ["No Hardcoded Secrets", "TypeScript Only"],
@@ -232,7 +240,10 @@ export async function generateDevilRebuttal(
         return JSON.parse(cleanJsonResponse(contentBlock.text)) as RoundRebuttalResult;
     } catch (err: any) {
         if (err?.status === 429 || err?.error?.type === 'rate_limit_error' || err?.message?.includes('credit')) {
-            console.warn("⚠️ Anthropic Quota Exceeded. Returning Mock Devil Rebuttal for Demonstration Purposes.");
+            if (process.env.DEBATE_DEMO_MODE !== 'true') {
+                throw new Error(`Anthropic quota exceeded during generateDevilRebuttal. Set DEBATE_DEMO_MODE=true to enable mock fallback for demos.`);
+            }
+            console.warn("⚠️ DEBATE_DEMO_MODE: Anthropic Quota Exceeded. Returning Mock Devil Rebuttal.");
             return {
                 rebuttal: "While the primary reviewer's identification of the hardcoded secret is valid, the severity assessment is incomplete. The 'Business Logic' tile was approved despite the secret being a core business logic failure. Furthermore, the reviewer did not recommend a full repository secret scan.",
                 agreesWithPrimary: false,

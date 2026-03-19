@@ -3,25 +3,35 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import fc from "fast-check";
 
 // ── Mocks (hoisted so vi.mock factories can reference them) ──────────────────
+// vi.hoisted() runs before any imports, making the references available inside
+// vi.mock() factory functions.  We store mocks on a single stable object rather
+// than destructuring immediately so the property references in vi.mock factories
+// survive across Vitest versions that may resolve the hoisted scope differently.
 
-const { mockGeneratePrimaryArgument, mockGenerateDevilRebuttal, mockPrisma } =
-  vi.hoisted(() => ({
-    mockGeneratePrimaryArgument: vi.fn(),
-    mockGenerateDevilRebuttal: vi.fn(),
-    mockPrisma: {
-      debateRecord: { create: vi.fn() },
-    },
-  }));
+const mocks = vi.hoisted(() => ({
+  generatePrimaryArgument: vi.fn(),
+  generateDevilRebuttal: vi.fn(),
+  prisma: {
+    debateRecord: { create: vi.fn() },
+  },
+}));
+
+// Readable aliases used in test bodies — these point at the same vi.fn() instances
+const mockGeneratePrimaryArgument = mocks.generatePrimaryArgument;
+const mockGenerateDevilRebuttal = mocks.generateDevilRebuttal;
+const mockPrisma = mocks.prisma;
 
 vi.mock("../../src/services/debate.js", () => ({
+  // Reference via mocks.* so the factory closure captures the object, not a
+  // stale copy of a destructured variable that may have been undefined at hoist time.
   generatePrimaryArgument: (...args: unknown[]) =>
-    mockGeneratePrimaryArgument(...args),
+    mocks.generatePrimaryArgument(...args),
   generateDevilRebuttal: (...args: unknown[]) =>
-    mockGenerateDevilRebuttal(...args),
+    mocks.generateDevilRebuttal(...args),
 }));
 
 vi.mock("../../src/services/db.js", () => ({
-  prisma: mockPrisma,
+  prisma: mocks.prisma,
 }));
 
 // ── Import SUT after mocks ──────────────────────────────────────────────────

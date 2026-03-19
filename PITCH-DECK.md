@@ -66,7 +66,7 @@ PR Opened
 |------|-------------|
 | 1. PR opened | CRS fetches the full diff via GitHub API |
 | 2. Constitution loaded | YAML rules fetched from the repo |
-| 3. Primary AI Review | GPT-4o reads diff against every clause, flags violations |
+| 3. Primary AI Review | Claude reads diff against every clause, flags violations |
 | 4. Devil's Advocate | A second AI agent critiques the primary review — challenges false positives, finds missed violations |
 | 5. Review Tiles posted | Structured review tiles appear in the PR as a GitHub Check |
 | 6. Confidence scoring | Violations increment a clause's confidence score (stored in PostgreSQL) |
@@ -131,7 +131,7 @@ CRS rewards reviewers who engage:
 |---|---|
 | Probot GitHub App (webhook listener) | Done |
 | PR diff fetching + Constitution loader | Done |
-| Primary AI review (GPT-4o) | Done |
+| Primary AI review (Claude claude-sonnet-4-5) | Done |
 | Devil's Advocate AI debate agent | Done |
 | Confidence scoring + escalation logic | Done |
 | Hard Block enforcement via GitHub Check | Done |
@@ -140,7 +140,7 @@ CRS rewards reviewers who engage:
 | React analytics dashboard | Done |
 | `/crs approve` and `/crs flag` commands | Done |
 
-**Stack:** TypeScript · Probot · PostgreSQL · Redis · OpenAI GPT-4o · React · Vite
+**Stack:** TypeScript · Probot · PostgreSQL · Redis · Anthropic Claude (claude-sonnet-4-5) · React · Vite
 
 **To run it:** Install on a GitHub org, add a `constitution.yaml`, open a PR.
 
@@ -202,7 +202,7 @@ CRS rewards reviewers who engage:
 - How often did the AI debate change the final call?
 - Did reviewer engagement improve?
 
-**Resources needed:** One repo, one team willing to try it, access to an OpenAI API key.
+**Resources needed:** One repo, one team willing to try it, access to an Anthropic API key.
 
 > The Constitution is already written. We just need a repo to govern.
 
