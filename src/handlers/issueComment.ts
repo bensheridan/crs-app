@@ -2,6 +2,8 @@ import { Context } from "probot";
 import { fetchConfig } from "../utils/config.js";
 import { createReviewCheck } from "./checkRun.js";
 import { trackReviewerAction } from "../services/reviewers.js";
+import { findPendingProposal, listPendingProposals, adoptProposal, revertProposalToPending, rejectProposal } from "../services/proposalService.js";
+import { createConstitutionPR } from "../services/constitutionWriter.js";
 
 export async function handleIssueComment(context: Context<"issue_comment.created">) {
     const comment = context.payload.comment;
@@ -43,8 +45,104 @@ export async function handleIssueComment(context: Context<"issue_comment.created
             return;
         }
         reason = parts.slice(3).join(" ");
+    } else if (action === "adopt") {
+        const clauseTitle = parts.slice(2).join(" ");
+        if (!clauseTitle) {
+            await postError(context, "Adopt command requires a clause title. Usage: `/crs adopt <clause_title>`");
+            return;
+        }
+
+        const proposal = await findPendingProposal(clauseTitle, repo.owner.login, repo.name);
+
+        if (!proposal) {
+            const pending = await listPendingProposals(repo.owner.login, repo.name);
+            const proposalList = pending.length > 0
+                ? pending.map(p => `- ${p.title}`).join("\n")
+                : "(none)";
+            await postError(context, `No pending proposal matching \`${clauseTitle}\`. Available proposals:\n${proposalList}`);
+            return;
+        }
+
+        try {
+            await adoptProposal(proposal.id, comment.user!.login);
+
+            const prUrl = await createConstitutionPR({
+                octokit: context.octokit,
+                repoOwner: repo.owner.login,
+                repoName: repo.name,
+                defaultBranch: repo.default_branch,
+                clause: { title: proposal.title, description: proposal.description },
+                sourcePrNumber: proposal.source_prs[0],
+                reason: proposal.reason,
+            });
+
+            await context.octokit.issues.createComment({
+                owner: repo.owner.login,
+                repo: repo.name,
+                issue_number: issue.number,
+                body: `✅ **Clause adopted!** A PR has been created to update the constitution: ${prUrl}`,
+            });
+        } catch (err) {
+            _logger.error({ err }, "Failed to create constitution PR after adopting proposal");
+            await revertProposalToPending(proposal.id);
+            await postError(context, "Failed to create the constitution PR. The proposal has been reverted to pending status. Please try again.");
+        }
+
+        // Add thumbs up reaction
+        try {
+            await context.octokit.reactions.createForIssueComment({
+                owner: repo.owner.login,
+                repo: repo.name,
+                comment_id: comment.id,
+                content: "+1",
+            });
+        } catch (_reactionErr) {
+            // Reaction is best-effort, ignore failures
+        }
+
+        return;
+    } else if (action === "reject") {
+        const clauseTitle = parts.slice(2).join(" ");
+        if (!clauseTitle) {
+            await postError(context, "Reject command requires a clause title. Usage: `/crs reject <clause_title>`");
+            return;
+        }
+
+        const proposal = await findPendingProposal(clauseTitle, repo.owner.login, repo.name);
+
+        if (!proposal) {
+            const pending = await listPendingProposals(repo.owner.login, repo.name);
+            const proposalList = pending.length > 0
+                ? pending.map(p => `- ${p.title}`).join("\n")
+                : "(none)";
+            await postError(context, `No pending proposal matching \`${clauseTitle}\`. Available proposals:\n${proposalList}`);
+            return;
+        }
+
+        await rejectProposal(proposal.id, comment.user!.login);
+
+        await context.octokit.issues.createComment({
+            owner: repo.owner.login,
+            repo: repo.name,
+            issue_number: issue.number,
+            body: `❌ **Clause rejected.** The proposal "${proposal.title}" has been dismissed and will not resurface.`,
+        });
+
+        // Add thumbs up reaction
+        try {
+            await context.octokit.reactions.createForIssueComment({
+                owner: repo.owner.login,
+                repo: repo.name,
+                comment_id: comment.id,
+                content: "+1",
+            });
+        } catch (_reactionErr) {
+            // Reaction is best-effort, ignore failures
+        }
+
+        return;
     } else if (action !== "approve") {
-        await postError(context, `Unknown action: \`${action}\`. Use \`approve\` or \`flag\`.`);
+        await postError(context, `Unknown action: \`${action}\`. Use \`approve\`, \`flag\`, \`adopt\`, or \`reject\`.`);
         return;
     }
 
@@ -161,6 +259,6 @@ async function postError(context: Context<"issue_comment.created">, message: str
     }
 }
 
-function escapeRegExp(string: string) {
+export function escapeRegExp(string: string) {
     return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); // $& means the whole matched string
 }

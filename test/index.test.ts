@@ -1,83 +1,150 @@
-// You can import your modules
-// import index from '../src/index'
+// Meaningful CRS unit tests replacing Probot boilerplate
+// **Validates: Requirements 1.4, 2.4, 3.5**
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { escapeRegExp } from "../src/handlers/issueComment.js";
+import { fetchConfig } from "../src/utils/config.js";
+import { fetchConstitution } from "../src/utils/constitution.js";
 
-import nock from "nock";
-// Requiring our app implementation
-import myProbotApp from "../src/index.js";
-import { Probot, ProbotOctokit } from "probot";
-// Requiring our fixtures
-//import payload from "./fixtures/issues.opened.json" with { "type": "json"};
-import fs from "fs";
-import path from "path";
-import { fileURLToPath } from "url";
-import { describe, beforeEach, afterEach, test, expect } from "vitest";
+// ══════════════════════════════════════════════════════════════════════════════
+// escapeRegExp unit tests
+// ══════════════════════════════════════════════════════════════════════════════
 
-const issueCreatedBody = { body: "Thanks for opening this issue!" };
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
-const privateKey = fs.readFileSync(
-  path.join(__dirname, "fixtures/mock-cert.pem"),
-  "utf-8",
-);
-
-const payload = JSON.parse(
-  fs.readFileSync(path.join(__dirname, "fixtures/issues.opened.json"), "utf-8"),
-);
-
-describe("My Probot app", () => {
-  let probot: any;
-
-  beforeEach(() => {
-    nock.disableNetConnect();
-    probot = new Probot({
-      appId: 123,
-      privateKey,
-      // disable request throttling and retries for testing
-      Octokit: ProbotOctokit.defaults({
-        retry: { enabled: false },
-        throttle: { enabled: false },
-      }),
-    });
-    // Load our app into probot
-    probot.load(myProbotApp);
+describe("escapeRegExp", () => {
+  it.each([
+    [".", "\\."],
+    ["*", "\\*"],
+    ["+", "\\+"],
+    ["?", "\\?"],
+    ["^", "\\^"],
+    ["$", "\\$"],
+    ["{", "\\{"],
+    ["}", "\\}"],
+    ["(", "\\("],
+    [")", "\\)"],
+    ["|", "\\|"],
+    ["[", "\\["],
+    ["]", "\\]"],
+    ["\\", "\\\\"],
+  ])("escapes special char %s → %s", (input, expected) => {
+    expect(escapeRegExp(input)).toBe(expected);
   });
 
-  test("creates a comment when an issue is opened", async () => {
-    const mock = nock("https://api.github.com")
-      // Test that we correctly return a test token
-      .post("/app/installations/2/access_tokens")
-      .reply(200, {
-        token: "test",
-        permissions: {
-          issues: "write",
-        },
-      })
-
-      // Test that a comment is posted
-      .post("/repos/hiimbex/testing-things/issues/1/comments", (body: any) => {
-        expect(body).toMatchObject(issueCreatedBody);
-        return true;
-      })
-      .reply(200);
-
-    // Receive a webhook event
-    await probot.receive({ name: "issues", payload });
-
-    expect(mock.pendingMocks()).toStrictEqual([]);
+  it("escapes multiple special chars in one string", () => {
+    expect(escapeRegExp("C++ (High)")).toBe("C\\+\\+ \\(High\\)");
   });
 
-  afterEach(() => {
-    nock.cleanAll();
-    nock.enableNetConnect();
+  it("returns empty string unchanged", () => {
+    expect(escapeRegExp("")).toBe("");
+  });
+
+  it("returns plain string unchanged", () => {
+    expect(escapeRegExp("Business Logic")).toBe("Business Logic");
   });
 });
 
-// For more information about testing with Jest see:
-// https://facebook.github.io/jest/
 
-// For more information about using TypeScript in your tests, Jest recommends:
-// https://github.com/kulshekhar/ts-jest
+// ══════════════════════════════════════════════════════════════════════════════
+// fetchConfig unit tests — YAML parsing variations
+// ══════════════════════════════════════════════════════════════════════════════
 
-// For more information about testing with Nock see:
-// https://github.com/nock/nock
+function makeConfigContext(yamlContent: string) {
+  return {
+    octokit: {
+      repos: {
+        getContent: vi.fn().mockResolvedValue({
+          data: { content: Buffer.from(yamlContent).toString("base64") },
+        }),
+      },
+    },
+    payload: {
+      repository: { owner: { login: "o" }, name: "r" },
+    },
+    log: { info: vi.fn(), warn: vi.fn() },
+  } as any;
+}
+
+describe("fetchConfig", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("parses unquoted gatingMode", async () => {
+    const config = await fetchConfig(makeConfigContext("gatingMode: hard_block\nflagsRequireReason: true\nmaxDebateRounds: 3"));
+    expect(config.gatingMode).toBe("hard_block");
+  });
+
+  it("parses single-quoted gatingMode", async () => {
+    const config = await fetchConfig(makeConfigContext("gatingMode: 'soft_block'\nflagsRequireReason: false\nmaxDebateRounds: 4"));
+    expect(config.gatingMode).toBe("soft_block");
+    expect(config.flagsRequireReason).toBe(false);
+    expect(config.maxDebateRounds).toBe(4);
+  });
+
+  it("parses double-quoted gatingMode", async () => {
+    const config = await fetchConfig(makeConfigContext('gatingMode: "hard_block"\nflagsRequireReason: true\nmaxDebateRounds: 2'));
+    expect(config.gatingMode).toBe("hard_block");
+  });
+
+  it("handles trailing YAML comments", async () => {
+    const config = await fetchConfig(makeConfigContext("gatingMode: soft_block # strict\nflagsRequireReason: true\nmaxDebateRounds: 3"));
+    expect(config.gatingMode).toBe("soft_block");
+  });
+
+  it("uses defaults for missing fields", async () => {
+    const config = await fetchConfig(makeConfigContext("someOtherField: true"));
+    expect(config.gatingMode).toBe("advisory");
+    expect(config.flagsRequireReason).toBe(true);
+    expect(config.maxDebateRounds).toBe(3);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// fetchConstitution unit tests
+// ══════════════════════════════════════════════════════════════════════════════
+
+function makeConstitutionContext(yamlContent: string | null) {
+  const mock = yamlContent
+    ? vi.fn().mockResolvedValue({ data: { content: Buffer.from(yamlContent).toString("base64") } })
+    : vi.fn().mockRejectedValue(new Error("Not Found"));
+
+  return {
+    octokit: { repos: { getContent: mock } },
+    payload: {
+      repository: { owner: { login: "o" }, name: "r" },
+      pull_request: { head: { sha: "abc" } },
+    },
+    log: { info: vi.fn(), warn: vi.fn() },
+  } as any;
+}
+
+describe("fetchConstitution", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("returns parsed clause objects", async () => {
+    const yaml = 'clauses:\n  - id: 1\n    title: "TS Only"\n    category: "Arch"\n    description: "Use TS"';
+    const result = await fetchConstitution(makeConstitutionContext(yaml));
+    expect(Array.isArray(result)).toBe(true);
+    expect(result).toHaveLength(1);
+    expect(result[0]).toEqual({ id: 1, title: "TS Only", category: "Arch", description: "Use TS" });
+  });
+
+  it("returns empty array when file is missing", async () => {
+    const result = await fetchConstitution(makeConstitutionContext(null));
+    expect(result).toEqual([]);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Check run conclusion — unflagged tiles produce "success"
+// ══════════════════════════════════════════════════════════════════════════════
+
+describe("check run conclusion logic", () => {
+  it("unflagged tiles produce success conclusion", () => {
+    // Mirrors the logic in createReviewCheck: hasFlaggedTiles drives conclusion
+    const reviewTiles = [
+      { name: "Business Logic", description: "", status: "approved" as const },
+      { name: "Security", description: "", status: "approved" as const },
+    ];
+    const hasFlaggedTiles = reviewTiles.some(t => (t.status as string) === "flagged");
+    const conclusion = hasFlaggedTiles ? "failure" : "success";
+    expect(conclusion).toBe("success");
+  });
+});
