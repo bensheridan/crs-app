@@ -36,15 +36,41 @@ export async function handleIssueComment(context: Context<"issue_comment.created
     }
 
     const action = parts[1].toLowerCase();
-    const tileName = parts[2].toLowerCase(); // Basic handling of single-word tiles for now. We might need better parsing later.
+
+    // For approve: the entire remainder is the tile name (supports multi-word and quoted names).
+    // For flag: the first remaining word is the tile name, everything after is the reason.
+    //   To use a multi-word tile name with flag, wrap it in quotes:
+    //   /crs flag "Business Logic" this tile is too broad
+    // Strip leading/trailing quotes so copy-pasted quoted strings work naturally.
+    const stripQuotes = (s: string) => s.replace(/^["']|["']$/g, "").trim();
+
+    let tileName = "";
     let reason = "";
 
+    if (action === "approve") {
+        tileName = stripQuotes(parts.slice(2).join(" ")).toLowerCase();
+    } else if (action === "flag") {
+        // Detect quoted tile name: /crs flag "My Tile" reason text
+        const remainder = parts.slice(2).join(" ");
+        const quotedMatch = remainder.match(/^["'](.+?)["']\s*(.*)/s);
+        if (quotedMatch) {
+            tileName = quotedMatch[1].toLowerCase();
+            reason = quotedMatch[2].trim();
+        } else {
+            // Fall back to single-word tile + rest as reason
+            tileName = parts[2].toLowerCase();
+            reason = parts.slice(3).join(" ");
+        }
+    } else {
+        // adopt / reject — tileName not used for these branches; set a safe default
+        tileName = parts[2].toLowerCase();
+    }
+
     if (action === "flag") {
-        if (parts.length < 4) {
-            await postError(context, "Flag command requires a reason. Usage: `/crs flag <tile> <reason>`");
+        if (!reason) {
+            await postError(context, "Flag command requires a reason. Usage: `/crs flag <tile> <reason>` or `/crs flag \"Multi Word Tile\" <reason>`");
             return;
         }
-        reason = parts.slice(3).join(" ");
     } else if (action === "adopt") {
         const clauseTitle = parts.slice(2).join(" ");
         if (!clauseTitle) {
@@ -184,7 +210,11 @@ export async function handleIssueComment(context: Context<"issue_comment.created
     const match = botComment.body.match(regex);
 
     if (!match) {
-        await postError(context, `Could not find a review tile matching \`${tileName}\`.`);
+        // Extract the actual tile names from the bot comment to help the user
+        const tileMatches = [...botComment.body.matchAll(/### [⏳✅❌]\s+(.*?)\s+\[(PENDING|APPROVED|FLAGGED)\]/g)];
+        const availableTiles = tileMatches.map(m => `- \`${m[1]}\``).join("\n");
+        const tileList = availableTiles || "(no tiles found)";
+        await postError(context, `Could not find a review tile matching \`${tileName}\`.\n\nAvailable tiles:\n${tileList}`);
         return;
     }
 
