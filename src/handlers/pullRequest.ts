@@ -1,10 +1,11 @@
 import { Context } from "probot";
 import { fetchConstitution } from "../utils/constitution.js";
 import { generatePRReview, AIReviewResult } from "../services/ai.js";
-import { generateDebateReview, AIDebateResult } from "../services/debate.js";
+import { orchestrateDebate, MultiRoundDebateResult } from "../services/debateOrchestrator.js";
 import { logViolation, getRecentViolations, getHardBlockClauses } from "../services/violations.js";
 import { fetchConfig } from "../utils/config.js";
 import { createReviewCheck } from "../handlers/checkRun.js";
+import { upsertProposal } from "../services/proposalService.js";
 
 type PRContext = Context<"pull_request.opened"> | Context<"pull_request.synchronize">;
 
@@ -36,7 +37,10 @@ export async function handlePullRequest(context: PRContext) {
     }
 
     // 2. Fetch Constitution & Recent Violations & Hard Blocks
-    const constitution = await fetchConstitution(context);
+    const clauses = await fetchConstitution(context);
+    const constitution = clauses.length > 0
+        ? clauses.map(c => `- [${c.category}] ${c.title}: ${c.description}`).join("\n")
+        : "No constitution exists yet.";
 
     let recentViolationsFormatted = "None";
     let hardBlockClausesFormatted = "None";
@@ -64,7 +68,7 @@ export async function handlePullRequest(context: PRContext) {
     try {
         aiResult = await generatePRReview(
             diff,
-            constitution || "No constitution exists yet.",
+            constitution,
             pr.title,
             pr.body || "",
             recentViolationsFormatted,
@@ -75,14 +79,20 @@ export async function handlePullRequest(context: PRContext) {
         return;
     }
 
-    // 3.5 Generate AI Debate Review
-    _logger.info("Generating AI Debate (Devil's Advocate) review...");
-    let debateResult: AIDebateResult | undefined;
+    // 3.5 Fetch config & Generate Multi-Round AI Debate
+    const config = await fetchConfig(context);
+
+    _logger.info("Generating multi-round AI Debate...");
+    let debateResult: MultiRoundDebateResult | undefined;
     try {
-        debateResult = await generateDebateReview(
+        debateResult = await orchestrateDebate(
             diff,
-            constitution || "No constitution exists yet.",
-            aiResult
+            constitution,
+            aiResult,
+            config.maxDebateRounds,
+            pr.number,
+            repo.owner.login,
+            repo.name
         );
     } catch (err) {
         _logger.error({ err }, "Failed to generate AI Debate review (continuing anyway)");
@@ -91,19 +101,52 @@ export async function handlePullRequest(context: PRContext) {
     // 4. Log Violations (Clauses Touched)
     if (aiResult.clausesTouched && aiResult.clausesTouched.length > 0) {
         for (const clauseTitle of aiResult.clausesTouched) {
-            // we assume the PR author is the AI agent trigger or "unknown"
             const author = pr.user ? pr.user.login : "unknown_agent";
             await logViolation(clauseTitle, pr.number, author, "gpt-4o");
         }
     }
 
+    // 4.5 Persist AI-suggested clauses as proposals.
+    // IMPORTANT: build suggestionsForComment ONLY from proposals that were
+    // successfully written to the DB. If we used aiResult.suggestedClauses
+    // directly, the comment would show /crs adopt buttons for proposals that
+    // never made it into the DB, causing "Available proposals: (none)" errors.
+    const suggestionsForComment: SuggestionWithCount[] = [];
+    if (aiResult.suggestedClauses && aiResult.suggestedClauses.length > 0) {
+        for (const suggestion of aiResult.suggestedClauses) {
+            try {
+                const saved = await upsertProposal({
+                    title: suggestion.title,
+                    description: suggestion.description,
+                    reason: suggestion.reason,
+                    prNumber: pr.number,
+                    repoOwner: repo.owner.login,
+                    repoName: repo.name,
+                });
+                if (saved) {
+                    // Use the actual DB record so suggestion_count reflects prior occurrences
+                    suggestionsForComment.push({
+                        title: saved.title,
+                        description: saved.description,
+                        reason: saved.reason,
+                        suggestionCount: saved.suggestion_count,
+                    });
+                } else {
+                    // upsertProposal returns null when a rejected proposal blocks re-creation
+                    _logger.info(`Proposal skipped (previously rejected): ${suggestion.title}`);
+                }
+            } catch (err) {
+                _logger.error({ err }, `Failed to persist proposal "${suggestion.title}" — omitting from comment to avoid broken adopt/reject buttons`);
+            }
+        }
+    }
+
     // 5. Build and Create Check Run
     _logger.info("Executing Constitutional Review checking process...");
-    const config = await fetchConfig(context);
     await createReviewCheck(context as Context<"pull_request">, aiResult, config);
 
-    // 6. Format Comment
-    const commentBody = formatReviewComment(aiResult, debateResult);
+    // 6. Format Comment (only includes proposals that are confirmed in the DB)
+    const commentBody = formatReviewComment(aiResult, debateResult, suggestionsForComment);
 
     // 7. Post Comment
     try {
@@ -119,7 +162,18 @@ export async function handlePullRequest(context: PRContext) {
     }
 }
 
-function formatReviewComment(result: AIReviewResult, debateResult?: AIDebateResult): string {
+export interface SuggestionWithCount {
+    title: string;
+    description: string;
+    reason: string;
+    suggestionCount?: number;
+}
+
+export function formatReviewComment(
+    result: AIReviewResult,
+    debateResult?: MultiRoundDebateResult,
+    suggestionsWithCounts?: SuggestionWithCount[]
+): string {
     const tilesMarkdown = result.reviewTiles.map(tile => {
         const icon = tile.status === 'approved' ? '✅' : tile.status === 'flagged' ? '❌' : '⏳';
         return `### ${icon} ${tile.name} [${tile.status.toUpperCase()}]
@@ -134,23 +188,38 @@ ${tile.description}`;
         ? result.riskAreas.map(r => `- ${r}`).join("\n")
         : "No immediate risks identified.";
 
-    const suggestionsMarkdown = result.suggestedClauses && result.suggestedClauses.length > 0
-        ? result.suggestedClauses.map(s => `> **${s.title}**\n> ${s.description}\n> *Reason: ${s.reason}*`).join("\n\n")
+    const suggestions: SuggestionWithCount[] = suggestionsWithCounts && suggestionsWithCounts.length > 0
+        ? suggestionsWithCounts
+        : (result.suggestedClauses || []).map(s => ({ title: s.title, description: s.description, reason: s.reason }));
+
+    const suggestionsMarkdown = suggestions.length > 0
+        ? suggestions.map(s => {
+            const countLabel = s.suggestionCount && s.suggestionCount > 1 ? ` *(Suggested ${s.suggestionCount} times)*` : "";
+            return `> **${s.title}**${countLabel}\n> ${s.description}\n> *Reason: ${s.reason}*\n> \`/crs adopt ${s.title}\` · \`/crs reject ${s.title}\``;
+        }).join("\n\n") + "\n\n> 💡 **Tip:** Use `/crs adopt <title>` to add a clause to the constitution, or `/crs reject <title>` to dismiss it."
         : "No new clauses suggested.";
 
     let debateMarkdown = "";
     if (debateResult) {
-        const agreementIcon = debateResult.agreesWithPrimary ? '🤝' : '🧑‍⚖️';
-        const contentionPoints = debateResult.pointsOfContention.length > 0
-            ? debateResult.pointsOfContention.map(p => `- ${p}`).join("\n")
-            : "The secondary AI strongly agreed with the primary assessment and found no major constitutional flaws.";
+        const roundsMarkdown = debateResult.rounds.map(round => {
+            return `### Round ${round.roundNumber} — Score: ${round.score}/100 (${round.strengthLabel})
+**Primary Reviewer:**
+${round.primaryArgument}
 
-        debateMarkdown = `### ${agreementIcon} AI Debate: Devil's Advocate
-        
-> **Debate Summary:** ${debateResult.debateSummary}
+**Devil's Advocate:**
+${round.devilRebuttal}`;
+        }).join("\n\n");
 
-**Points of Contention:**
-${contentionPoints}
+        const earlyTermination = debateResult.terminatedEarly
+            ? "\n\n> ✅ Debate concluded early — consensus reached."
+            : "";
+
+        debateMarkdown = `## 🤼 AI Debate Summary
+
+**Debate Confidence: ${debateResult.debateConfidence}/100 (${debateResult.confidenceLabel})**
+Rounds completed: ${debateResult.totalRoundsCompleted}/${debateResult.maxRoundsConfigured}
+
+${roundsMarkdown}${earlyTermination}
 
 ---
 `;

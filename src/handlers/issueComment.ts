@@ -2,6 +2,8 @@ import { Context } from "probot";
 import { fetchConfig } from "../utils/config.js";
 import { createReviewCheck } from "./checkRun.js";
 import { trackReviewerAction } from "../services/reviewers.js";
+import { findPendingProposal, listPendingProposals, adoptProposal, revertProposalToPending, rejectProposal } from "../services/proposalService.js";
+import { createConstitutionPR } from "../services/constitutionWriter.js";
 
 export async function handleIssueComment(context: Context<"issue_comment.created">) {
     const comment = context.payload.comment;
@@ -34,17 +36,139 @@ export async function handleIssueComment(context: Context<"issue_comment.created
     }
 
     const action = parts[1].toLowerCase();
-    const tileName = parts[2].toLowerCase(); // Basic handling of single-word tiles for now. We might need better parsing later.
+
+    // For approve: the entire remainder is the tile name (supports multi-word and quoted names).
+    // For flag: the first remaining word is the tile name, everything after is the reason.
+    //   To use a multi-word tile name with flag, wrap it in quotes:
+    //   /crs flag "Business Logic" this tile is too broad
+    // Strip leading/trailing quotes so copy-pasted quoted strings work naturally.
+    const stripQuotes = (s: string) => s.replace(/^["']|["']$/g, "").trim();
+
+    let tileName = "";
     let reason = "";
 
+    if (action === "approve") {
+        tileName = stripQuotes(parts.slice(2).join(" ")).toLowerCase();
+    } else if (action === "flag") {
+        // Detect quoted tile name: /crs flag "My Tile" reason text
+        const remainder = parts.slice(2).join(" ");
+        const quotedMatch = remainder.match(/^["'](.+?)["']\s*(.*)/s);
+        if (quotedMatch) {
+            tileName = quotedMatch[1].toLowerCase();
+            reason = quotedMatch[2].trim();
+        } else {
+            // Fall back to single-word tile + rest as reason
+            tileName = parts[2].toLowerCase();
+            reason = parts.slice(3).join(" ");
+        }
+    } else {
+        // adopt / reject — tileName not used for these branches; set a safe default
+        tileName = parts[2].toLowerCase();
+    }
+
     if (action === "flag") {
-        if (parts.length < 4) {
-            await postError(context, "Flag command requires a reason. Usage: `/crs flag <tile> <reason>`");
+        if (!reason) {
+            await postError(context, "Flag command requires a reason. Usage: `/crs flag <tile> <reason>` or `/crs flag \"Multi Word Tile\" <reason>`");
             return;
         }
-        reason = parts.slice(3).join(" ");
+    } else if (action === "adopt") {
+        const clauseTitle = parts.slice(2).join(" ");
+        if (!clauseTitle) {
+            await postError(context, "Adopt command requires a clause title. Usage: `/crs adopt <clause_title>`");
+            return;
+        }
+
+        const proposal = await findPendingProposal(clauseTitle, repo.owner.login, repo.name);
+
+        if (!proposal) {
+            const pending = await listPendingProposals(repo.owner.login, repo.name);
+            const proposalList = pending.length > 0
+                ? pending.map(p => `- ${p.title}`).join("\n")
+                : "(none)";
+            await postError(context, `No pending proposal matching \`${clauseTitle}\`. Available proposals:\n${proposalList}`);
+            return;
+        }
+
+        try {
+            await adoptProposal(proposal.id, comment.user!.login);
+
+            const prUrl = await createConstitutionPR({
+                octokit: context.octokit,
+                repoOwner: repo.owner.login,
+                repoName: repo.name,
+                defaultBranch: repo.default_branch,
+                clause: { title: proposal.title, description: proposal.description },
+                sourcePrNumber: proposal.source_prs[0],
+                reason: proposal.reason,
+            });
+
+            await context.octokit.issues.createComment({
+                owner: repo.owner.login,
+                repo: repo.name,
+                issue_number: issue.number,
+                body: `✅ **Clause adopted!** A PR has been created to update the constitution: ${prUrl}`,
+            });
+        } catch (err) {
+            _logger.error({ err }, "Failed to create constitution PR after adopting proposal");
+            await revertProposalToPending(proposal.id);
+            await postError(context, "Failed to create the constitution PR. The proposal has been reverted to pending status. Please try again.");
+        }
+
+        // Add thumbs up reaction
+        try {
+            await context.octokit.reactions.createForIssueComment({
+                owner: repo.owner.login,
+                repo: repo.name,
+                comment_id: comment.id,
+                content: "+1",
+            });
+        } catch (_reactionErr) {
+            // Reaction is best-effort, ignore failures
+        }
+
+        return;
+    } else if (action === "reject") {
+        const clauseTitle = parts.slice(2).join(" ");
+        if (!clauseTitle) {
+            await postError(context, "Reject command requires a clause title. Usage: `/crs reject <clause_title>`");
+            return;
+        }
+
+        const proposal = await findPendingProposal(clauseTitle, repo.owner.login, repo.name);
+
+        if (!proposal) {
+            const pending = await listPendingProposals(repo.owner.login, repo.name);
+            const proposalList = pending.length > 0
+                ? pending.map(p => `- ${p.title}`).join("\n")
+                : "(none)";
+            await postError(context, `No pending proposal matching \`${clauseTitle}\`. Available proposals:\n${proposalList}`);
+            return;
+        }
+
+        await rejectProposal(proposal.id, comment.user!.login);
+
+        await context.octokit.issues.createComment({
+            owner: repo.owner.login,
+            repo: repo.name,
+            issue_number: issue.number,
+            body: `❌ **Clause rejected.** The proposal "${proposal.title}" has been dismissed and will not resurface.`,
+        });
+
+        // Add thumbs up reaction
+        try {
+            await context.octokit.reactions.createForIssueComment({
+                owner: repo.owner.login,
+                repo: repo.name,
+                comment_id: comment.id,
+                content: "+1",
+            });
+        } catch (_reactionErr) {
+            // Reaction is best-effort, ignore failures
+        }
+
+        return;
     } else if (action !== "approve") {
-        await postError(context, `Unknown action: \`${action}\`. Use \`approve\` or \`flag\`.`);
+        await postError(context, `Unknown action: \`${action}\`. Use \`approve\`, \`flag\`, \`adopt\`, or \`reject\`.`);
         return;
     }
 
@@ -86,7 +210,11 @@ export async function handleIssueComment(context: Context<"issue_comment.created
     const match = botComment.body.match(regex);
 
     if (!match) {
-        await postError(context, `Could not find a review tile matching \`${tileName}\`.`);
+        // Extract the actual tile names from the bot comment to help the user
+        const tileMatches = [...botComment.body.matchAll(/### [⏳✅❌]\s+(.*?)\s+\[(PENDING|APPROVED|FLAGGED)\]/g)];
+        const availableTiles = tileMatches.map(m => `- \`${m[1]}\``).join("\n");
+        const tileList = availableTiles || "(no tiles found)";
+        await postError(context, `Could not find a review tile matching \`${tileName}\`.\n\nAvailable tiles:\n${tileList}`);
         return;
     }
 
@@ -161,6 +289,10 @@ async function postError(context: Context<"issue_comment.created">, message: str
     }
 }
 
-function escapeRegExp(string: string) {
+export function escapeRegExp(string: string) {
+    // Escapes all regex metacharacters so the string can be used as a literal pattern.
+    // Hyphen (-) is intentionally NOT escaped: it is only special inside character
+    // classes ([...]), not in a plain regex pattern, so escaping it would break the
+    // preservation invariant that safe strings pass through unchanged.
     return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); // $& means the whole matched string
 }

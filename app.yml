@@ -19,7 +19,7 @@ default_events:
 
 default_permissions:
   checks: write
-  contents: read
+  contents: write  # needs write to create branches and commit constitution.yaml updates
   issues: write
   metadata: read
   pull_requests: write

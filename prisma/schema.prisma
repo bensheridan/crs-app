@@ -50,3 +50,59 @@ model Metric {
   value            Int      @default(0)
   last_updated_at  DateTime @default(now())
 }
+
+model ClauseProposal {
+  id               String    @id @default(uuid())
+  title            String
+  description      String
+  reason           String
+  status           String    @default("pending")
+  suggestion_count Int       @default(1)
+  source_prs       Int[]
+  repo_owner       String
+  repo_name        String
+  adopted_by       String?
+  rejected_by      String?
+  resolved_at      DateTime?
+  created_at       DateTime  @default(now())
+  updated_at       DateTime  @updatedAt
+
+  @@unique([title, repo_owner, repo_name])
+  @@index([status])
+}
+
+model DebateRecord {
+  id                  String        @id @default(uuid())
+  pr_number           Int
+  repo_owner          String
+  repo_name           String
+  debate_confidence   Int
+  confidence_label    String
+  total_rounds        Int
+  max_rounds          Int
+  terminated_early    Boolean       @default(false)
+  transcript          String
+  created_at          DateTime      @default(now())
+
+  rounds              DebateRound[]
+
+  @@index([repo_owner, repo_name])
+  @@index([created_at])
+}
+
+model DebateRound {
+  id                        String       @id @default(uuid())
+  debate_id                 String
+  round_number              Int
+  primary_argument          String
+  devil_rebuttal            String
+  score                     Int
+  strength_label            String
+  constitutional_references String[]
+  evidence_citations        String[]
+  coherence_rating          Int
+
+  debate                    DebateRecord @relation(fields: [debate_id], references: [id])
+
+  @@index([debate_id])
+}

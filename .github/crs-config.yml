@@ -1,1 +1,5 @@
-gating_mode: hard_block
+# fetchConfig parses camelCase keys (gatingMode, flagsRequireReason, maxDebateRounds).
+# Snake_case keys (gating_mode) are silently ignored and fall back to defaults.
+gatingMode: hard_block
+flagsRequireReason: true
+maxDebateRounds: 3
