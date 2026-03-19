@@ -3,6 +3,9 @@ import { AIReviewResult } from "./ai.js";
 
 const anthropic = new Anthropic({
     apiKey: process.env.ANTHROPIC_API_KEY,
+    // Increase retries so transient 429 rate-limit bursts are handled by the
+    // SDK's built-in exponential backoff before surfacing to our code.
+    maxRetries: 4,
 });
 
 export interface AIDebateResult {
@@ -24,6 +27,40 @@ export interface RoundRebuttalResult {
     constitutionalReferences: string[];
     evidenceCitations: string[];
     coherenceRating: number;
+}
+
+/**
+ * Classifies an Anthropic SDK error into one of three buckets:
+ *  - 'rate_limit'      HTTP 429 / rate_limit_error — transient, retry later
+ *  - 'credit_exhausted' HTTP 402 or body contains credit/balance language — needs top-up
+ *  - 'other'           Any other error
+ *
+ * Note: check err.error.message (API body) not err.message (SDK wrapper string).
+ */
+function classifyAnthropicError(err: any): 'rate_limit' | 'credit_exhausted' | 'other' {
+    const status: number | undefined = err?.status;
+    const errorType: string | undefined = err?.error?.type;
+    // The actual Anthropic API error message lives at err.error.message, NOT err.message
+    const apiMsg = (err?.error?.message ?? '').toLowerCase();
+
+    if (status === 429 || errorType === 'rate_limit_error') {
+        return 'rate_limit';
+    }
+    if (status === 402 || apiMsg.includes('credit') || apiMsg.includes('insufficient') || apiMsg.includes('balance')) {
+        return 'credit_exhausted';
+    }
+    return 'other';
+}
+
+/** Strips markdown code fences that Claude occasionally adds despite instructions. */
+function cleanJsonResponse(text: string): string {
+    let jsonText = text;
+    if (jsonText.startsWith('```json')) {
+        jsonText = jsonText.replace(/^```json\s*/, '').replace(/\s*```$/, '');
+    } else if (jsonText.startsWith('```')) {
+        jsonText = jsonText.replace(/^```\s*/, '').replace(/\s*```$/, '');
+    }
+    return jsonText.trim();
 }
 
 export async function generateDebateReview(
@@ -59,7 +96,7 @@ export async function generateDebateReview(
         const response = await anthropic.messages.create({
             model: "claude-sonnet-4-5",
             max_tokens: 4096,
-            temperature: 0.7, // slightly higher temperature for a more critical/creative perspective
+            temperature: 0.7,
             system: "You are a critical AI reviewer that outputs strictly valid JSON. Do not include markdown formatting or reasoning text.",
             messages: [
                 { role: "user", content: prompt }
@@ -69,23 +106,23 @@ export async function generateDebateReview(
         const contentBlock = response.content[0];
         if (contentBlock.type !== 'text') throw new Error("Unexpected content format from Anthropic Debate");
 
-        // Sometimes Claude wraps JSON in markdown blocks even when told not to. Basic cleanup:
-        let jsonText = contentBlock.text;
-        if (jsonText.startsWith('```json')) {
-            jsonText = jsonText.replace(/^```json\s*/, '').replace(/\s*```$/, '');
-        } else if (jsonText.startsWith('```')) {
-            jsonText = jsonText.replace(/^```\s*/, '').replace(/\s*```$/, '');
+        return JSON.parse(cleanJsonResponse(contentBlock.text)) as AIDebateResult;
+    } catch (err: any) {
+        const kind = classifyAnthropicError(err);
+        const apiMessage = err?.error?.message || err?.message || String(err);
+
+        if (kind === 'rate_limit') {
+            // Transient — the debate will be skipped this run; the PR review still posts.
+            // Caller (debateOrchestrator) already wraps this in a try/catch that continues.
+            console.warn(`⚠️ Anthropic rate limit in generateDebateReview: ${apiMessage}`);
+            throw new Error(`Anthropic API rate limit hit during generateDebateReview (HTTP 429). Push another commit to retry. API detail: ${apiMessage}`);
         }
 
-        return JSON.parse(jsonText.trim()) as AIDebateResult;
-    } catch (err: any) {
-        if (err?.status === 429 || err?.error?.type === 'rate_limit_error' || err?.message?.includes('credit')) {
+        if (kind === 'credit_exhausted') {
             if (process.env.DEBATE_DEMO_MODE !== 'true') {
-                // In production, propagate quota errors so callers can handle them explicitly
-                // rather than silently returning demo data that could mask real issues.
-                throw new Error(`Anthropic quota exceeded during generateDebateReview. Set DEBATE_DEMO_MODE=true to enable mock fallback for demos.`);
+                throw new Error(`Anthropic account has insufficient credits during generateDebateReview. API detail: ${apiMessage}. Set DEBATE_DEMO_MODE=true to enable mock fallback for demos.`);
             }
-            console.warn("⚠️ DEBATE_DEMO_MODE: Anthropic Quota Exceeded. Returning Mock Debate Data.");
+            console.warn("⚠️ DEBATE_DEMO_MODE: Anthropic credits exhausted. Returning Mock Debate Data.");
             return {
                 agreesWithPrimary: false,
                 debateSummary: "While the primary reviewer correctly identified the hardcoded secret, it failed to fully analyze the severity of the architectural violation. Using raw JavaScript (`test.js`) entirely defeats our TypeScript compilation pipelines.",
@@ -95,18 +132,9 @@ export async function generateDebateReview(
                 ]
             };
         }
+
         throw err;
     }
-}
-
-function cleanJsonResponse(text: string): string {
-    let jsonText = text;
-    if (jsonText.startsWith('```json')) {
-        jsonText = jsonText.replace(/^```json\s*/, '').replace(/\s*```$/, '');
-    } else if (jsonText.startsWith('```')) {
-        jsonText = jsonText.replace(/^```\s*/, '').replace(/\s*```$/, '');
-    }
-    return jsonText.trim();
 }
 
 export async function generatePrimaryArgument(
@@ -164,11 +192,19 @@ export async function generatePrimaryArgument(
 
         return JSON.parse(cleanJsonResponse(contentBlock.text)) as RoundArgumentResult;
     } catch (err: any) {
-        if (err?.status === 429 || err?.error?.type === 'rate_limit_error' || err?.message?.includes('credit')) {
+        const kind = classifyAnthropicError(err);
+        const apiMessage = err?.error?.message || err?.message || String(err);
+
+        if (kind === 'rate_limit') {
+            console.warn(`⚠️ Anthropic rate limit in generatePrimaryArgument: ${apiMessage}`);
+            throw new Error(`Anthropic API rate limit hit during generatePrimaryArgument (HTTP 429). Push another commit to retry. API detail: ${apiMessage}`);
+        }
+
+        if (kind === 'credit_exhausted') {
             if (process.env.DEBATE_DEMO_MODE !== 'true') {
-                throw new Error(`Anthropic quota exceeded during generatePrimaryArgument. Set DEBATE_DEMO_MODE=true to enable mock fallback for demos.`);
+                throw new Error(`Anthropic account has insufficient credits during generatePrimaryArgument. API detail: ${apiMessage}. Set DEBATE_DEMO_MODE=true to enable mock fallback for demos.`);
             }
-            console.warn("⚠️ DEBATE_DEMO_MODE: Anthropic Quota Exceeded. Returning Mock Primary Argument.");
+            console.warn("⚠️ DEBATE_DEMO_MODE: Anthropic credits exhausted. Returning Mock Primary Argument.");
             return {
                 argument: "The primary review correctly identified a hardcoded secret in dbSettings.js. The DB_PASSWORD variable on line 5 contains a plaintext credential, which violates the 'No Hardcoded Secrets' clause. Additionally, introducing a .js file violates the 'TypeScript Only' architectural rule.",
                 constitutionalReferences: ["No Hardcoded Secrets", "TypeScript Only"],
@@ -176,6 +212,7 @@ export async function generatePrimaryArgument(
                 coherenceRating: 78
             };
         }
+
         throw err;
     }
 }
@@ -239,11 +276,19 @@ export async function generateDevilRebuttal(
 
         return JSON.parse(cleanJsonResponse(contentBlock.text)) as RoundRebuttalResult;
     } catch (err: any) {
-        if (err?.status === 429 || err?.error?.type === 'rate_limit_error' || err?.message?.includes('credit')) {
+        const kind = classifyAnthropicError(err);
+        const apiMessage = err?.error?.message || err?.message || String(err);
+
+        if (kind === 'rate_limit') {
+            console.warn(`⚠️ Anthropic rate limit in generateDevilRebuttal: ${apiMessage}`);
+            throw new Error(`Anthropic API rate limit hit during generateDevilRebuttal (HTTP 429). Push another commit to retry. API detail: ${apiMessage}`);
+        }
+
+        if (kind === 'credit_exhausted') {
             if (process.env.DEBATE_DEMO_MODE !== 'true') {
-                throw new Error(`Anthropic quota exceeded during generateDevilRebuttal. Set DEBATE_DEMO_MODE=true to enable mock fallback for demos.`);
+                throw new Error(`Anthropic account has insufficient credits during generateDevilRebuttal. API detail: ${apiMessage}. Set DEBATE_DEMO_MODE=true to enable mock fallback for demos.`);
             }
-            console.warn("⚠️ DEBATE_DEMO_MODE: Anthropic Quota Exceeded. Returning Mock Devil Rebuttal.");
+            console.warn("⚠️ DEBATE_DEMO_MODE: Anthropic credits exhausted. Returning Mock Devil Rebuttal.");
             return {
                 rebuttal: "While the primary reviewer's identification of the hardcoded secret is valid, the severity assessment is incomplete. The 'Business Logic' tile was approved despite the secret being a core business logic failure. Furthermore, the reviewer did not recommend a full repository secret scan.",
                 agreesWithPrimary: false,
@@ -252,6 +297,7 @@ export async function generateDevilRebuttal(
                 coherenceRating: 72
             };
         }
+
         throw err;
     }
 }
