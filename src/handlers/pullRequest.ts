@@ -106,17 +106,38 @@ export async function handlePullRequest(context: PRContext) {
         }
     }
 
-    // 4.5 Persist AI-suggested clauses as proposals
+    // 4.5 Persist AI-suggested clauses as proposals.
+    // IMPORTANT: build suggestionsForComment ONLY from proposals that were
+    // successfully written to the DB. If we used aiResult.suggestedClauses
+    // directly, the comment would show /crs adopt buttons for proposals that
+    // never made it into the DB, causing "Available proposals: (none)" errors.
+    const suggestionsForComment: SuggestionWithCount[] = [];
     if (aiResult.suggestedClauses && aiResult.suggestedClauses.length > 0) {
         for (const suggestion of aiResult.suggestedClauses) {
-            await upsertProposal({
-                title: suggestion.title,
-                description: suggestion.description,
-                reason: suggestion.reason,
-                prNumber: pr.number,
-                repoOwner: repo.owner.login,
-                repoName: repo.name,
-            });
+            try {
+                const saved = await upsertProposal({
+                    title: suggestion.title,
+                    description: suggestion.description,
+                    reason: suggestion.reason,
+                    prNumber: pr.number,
+                    repoOwner: repo.owner.login,
+                    repoName: repo.name,
+                });
+                if (saved) {
+                    // Use the actual DB record so suggestion_count reflects prior occurrences
+                    suggestionsForComment.push({
+                        title: saved.title,
+                        description: saved.description,
+                        reason: saved.reason,
+                        suggestionCount: saved.suggestion_count,
+                    });
+                } else {
+                    // upsertProposal returns null when a rejected proposal blocks re-creation
+                    _logger.info(`Proposal skipped (previously rejected): ${suggestion.title}`);
+                }
+            } catch (err) {
+                _logger.error({ err }, `Failed to persist proposal "${suggestion.title}" — omitting from comment to avoid broken adopt/reject buttons`);
+            }
         }
     }
 
@@ -124,12 +145,7 @@ export async function handlePullRequest(context: PRContext) {
     _logger.info("Executing Constitutional Review checking process...");
     await createReviewCheck(context as Context<"pull_request">, aiResult, config);
 
-    // 6. Format Comment
-    const suggestionsForComment: SuggestionWithCount[] = (aiResult.suggestedClauses || []).map(s => ({
-        title: s.title,
-        description: s.description,
-        reason: s.reason,
-    }));
+    // 6. Format Comment (only includes proposals that are confirmed in the DB)
     const commentBody = formatReviewComment(aiResult, debateResult, suggestionsForComment);
 
     // 7. Post Comment

@@ -58,8 +58,10 @@ export async function upsertProposal(params: {
       },
     });
   } catch (err) {
-    console.error("Failed to upsert proposal:", err);
-    return null;
+    // Re-throw so the caller (pullRequest.ts) can decide whether to log, skip,
+    // or surface the failure — silently returning null here hid DB errors and
+    // caused the comment to show /crs adopt buttons for unsaved proposals.
+    throw err;
   }
 }
 
